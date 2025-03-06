@@ -1,3 +1,161 @@
+// 这段代码是 UnLua 框架的核心接口层，负责 C++ 与 Lua 的底层交互操作。以下是关键部分的解析：
+
+// ---
+
+// ### **1. 对象有效性校验**
+// ```cpp
+// bool IsUObjectValid(UObjectBase* ObjPtr) {
+//     // 通过对象标志位和内存有效性检测对象状态
+//     return (ObjPtr->GetFlags() & (RF_BeginDestroyed | RF_FinishDestroyed)) == 0 
+//         && ObjPtr->IsValidLowLevelFast();
+// }
+// ```
+// - **双保险检测**：通过 `RF_Begin/FinishDestroyed` 标志位判断对象销毁状态
+// - **内存有效性校验**：`IsValidLowLevelFast()` 检测对象内存完整性
+// - **悬挂指针防护**：`LowLevel::ReleasedPtr` 标记已释放指针
+
+// ---
+
+// ### **2. Lua 状态机管理**
+// ```cpp
+// lua_State* CreateState() {
+//     IUnLuaModule::Get().SetActive(true);
+//     return GetState();
+// }
+// ```
+// - **懒加载机制**：首次调用时激活 Lua 环境
+// - **多环境支持**：通过 `FLuaEnv` 管理独立 Lua 虚拟机
+// - **线程安全设计**：`GetState()` 返回主线程的 Lua 状态
+
+// ---
+
+// ### **3. 代码加载与执行**
+// ```cpp
+// bool LoadFile(lua_State* L, const FString& Path) {
+//     FFileHelper::LoadFileToArray(Data, *FullFilePath);
+//     return LoadChunk(L, Data.GetData() + SkipLen);
+// }
+// ```
+// - **字节码兼容处理**：自动跳过 UTF-8 BOM 头
+// - **沙盒环境支持**：`Env` 参数指定代码运行环境
+// - **跨平台路径解析**：`GetFullPathFromRelativePath` 处理多平台路径差异
+
+// ---
+
+// ### **4. 错误处理机制**
+// ```cpp
+// int32 ReportLuaCallError(lua_State* L) {
+//     if (FUnLuaDelegates::ReportLuaCallError.IsBound()) {
+//         return FUnLuaDelegates::...Execute(L); // 自定义错误处理
+//     }
+//     // 标准错误处理流程...
+// }
+// ```
+// - **双模错误报告**：
+//   - 优先调用引擎绑定的自定义错误处理器
+//   - 默认处理支持字符串/表格型错误信息
+// - **堆栈跟踪集成**：`luaL_traceback` 生成完整调用链
+
+// ---
+
+// ### **5. 对象绑定系统**
+// ```cpp
+// int32 PushUObject(lua_State* L, UObject* Object) {
+//     Env->GetObjectRegistry()->Push(L, Object);
+// }
+// ```
+// - **注册表缓存**：通过 `ObjectRegistry` 管理对象引用
+// - **元表校验**：自动检测并关联正确的元表
+// - **生命周期同步**：`FLuaObjectRegistry` 处理 UE 对象 GC
+
+// ---
+
+// ### **6. 容器类型支持**
+// ```cpp
+// int32 PushArray(lua_State* L, FScriptArray* Array) {
+//     Registry->FindOrAdd(L, Array, TypeInterface);
+// }
+// ```
+// - **内存布局映射**：直接复用 `TArray/TSet/TMap` 的内存结构
+// - **写时复制优化**：`bCreateCopy` 参数控制深拷贝行为
+// - **类型擦除设计**：`ITypeInterface` 抽象容器元素类型
+
+// ---
+
+// ### **7. 智能指针处理**
+// ```cpp
+// void* NewSmartPointer(lua_State* L, int32 Size) {
+//     MarkUserdataTwoLvPtrTag(Userdata); // 标记二级指针
+// }
+// ```
+// - **双重指针标识**：`TwoLvlPtrTag` 处理 `TSharedPtr<T>` 等类型
+// - **元表自动关联**：通过 MetatableName 绑定特定类型的操作
+
+// ---
+
+// ### **8. 栈安全防护**
+// ```cpp
+// FAutoStack::~FAutoStack() {
+//     lua_settop(L, OldTop); // 自动恢复栈顶
+// }
+// ```
+// - **RAII 模式**：通过构造函数/析构函数自动管理栈状态
+// - **防泄漏设计**：确保函数退出时栈平衡
+
+// ---
+
+// ### **9. 内存对齐处理**
+// ```cpp
+// void* NewUserdata(lua_State* L, int32 Size, int32 Alignment) {
+//     CalcUserdataPadding(Alignment); // 计算内存对齐
+// }
+// ```
+// - **跨平台对齐**：处理不同架构下的内存对齐要求
+// - **SIMD 优化**：确保矢量类型的内存对齐
+
+// ---
+
+// ### **10. 多版本兼容**
+// ```cpp
+// #if ENGINE_MAJOR_VERSION >=5
+//     DestScriptArray->Empty(..., __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+// #endif
+// ```
+// - **UE5 适配**：处理引擎版本差异化的 API
+// - **内存分配器变更**：适配 UE5 新版内存管理策略
+
+// ---
+
+// ### **关键设计思想**
+// 1. **零拷贝优化**：直接操作原生容器内存，避免数据复制
+// 2. **类型安全**：通过元表系统严格校验对象类型
+// 3. **生命周期同步**：Lua 引用与 UE 对象销毁自动解绑
+// 4. **多环境隔离**：支持多个独立的 Lua 虚拟机环境
+// 5. **性能优先**：大量使用 inline 和模板元编程优化
+
+// ---
+
+// ### **典型使用场景**
+// ```lua
+// -- Lua 端调用 C++ 对象
+// local actor = UE.UObject.Load("/Game/TestActor")
+// actor:SetLocation(FVector(1,2,3))
+
+// -- 处理智能指针
+// local shared_ptr = UE.TSharedPtr_Create(MyObject)
+// if shared_ptr:IsValid() then
+//     shared_ptr:Get():DoSomething()
+// end
+
+// -- 操作容器
+// local array = UE.TArray_Create(FSkillData)
+// array:Add(NewSkillData)
+// ```
+
+// 该层代码为上层提供了安全的跨语言互操作基础，使得 Lua 能够无缝调用 UE 的复杂对象系统。
+
+
+
 // Tencent is pleased to support the open source community by making UnLua available.
 // 
 // Copyright (C) 2019 THL A29 Limited, a Tencent company. All rights reserved.

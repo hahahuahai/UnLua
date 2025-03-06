@@ -1,3 +1,173 @@
+// 这段代码是 UnLua 框架中用于扩展 UE 的 `UWorld` 类功能的核心模块，主要实现通过 Lua 脚本生成 Actor 的能力。以下是各部分的详细解析：
+
+// ---
+
+// ### **1. Actor 生成函数**
+
+// #### **UWorld_SpawnActor**
+// ```cpp
+// static int32 UWorld_SpawnActor(lua_State* L)
+// ```
+// - **功能**：完整的 Actor 生成接口，支持 10 个参数
+// - **参数列表**：
+//   1. `World`：目标世界
+//   2. `Class`：生成的 Actor 类
+//   3. `Transform`：初始变换（可选）
+//   4. `CollisionHandling`：碰撞处理方式（可选）
+//   5. `Owner`：拥有者 Actor（可选）
+//   6. `Instigator`：触发者 Actor（可选）
+//   7. `LuaModule`：关联的 Lua 模块名（可选）
+//   8. `InitializationTable`：初始化参数表（可选）
+//   9. `Level`：生成层级（可选）
+//   10. `Name`：Actor 名称（可选）
+
+// - **关键逻辑**：
+//   - 使用 `FScopedLuaDynamicBinding` 临时绑定 Lua 模块
+//   - 调用 `World->SpawnActor` 生成 Actor
+//   - 支持通过 Lua 表传递初始化参数
+
+// #### **UWorld_SpawnActorEx**
+// ```cpp
+// static int32 UWorld_SpawnActorEx(lua_State* L)
+// ```
+// - **功能**：简化版生成接口，参数更集中
+// - **参数列表**：
+//   1. `World`：目标世界
+//   2. `Class`：生成的 Actor 类
+//   3. `Transform`：初始变换（可选）
+//   4. `InitializationTable`：初始化参数表（可选）
+//   5. `LuaModule`：关联的 Lua 模块名（可选）
+//   6. `SpawnParameters`：高级生成参数（可选）
+
+// ---
+
+// ### **2. FActorSpawnParameters 的 Lua 绑定**
+// ```cpp
+// BEGIN_EXPORT_CLASS(FActorSpawnParameters)
+//     ADD_PROPERTY(Name)
+//     ADD_PROPERTY(Template)
+//     //... 其他属性和方法
+// END_EXPORT_CLASS()
+// ```
+// - **作用**：将 UE 的 `FActorSpawnParameters` 结构体暴露给 Lua
+// - **支持属性**：
+//   - `Name`：Actor 名称
+//   - `Owner`：拥有者
+//   - `Instigator`：触发者
+//   - 碰撞处理标志位等
+// - **版本控制**：通过 `ENGINE_MAJOR_VERSION` 处理不同引擎版本差异
+
+// ---
+
+// ### **3. 类型导出宏**
+// #### **DEFINE_TYPE**
+// ```cpp
+// DEFINE_TYPE(ESpawnActorCollisionHandlingMethod)
+// ```
+// - **作用**：将 UE 枚举类型暴露到 Lua
+// - **使用场景**：在 Lua 中可以直接访问碰撞处理方式枚举值
+//   ```lua
+//   ESpawnActorCollisionHandlingMethod.AlwaysSpawn
+//   ```
+
+// #### **BEGIN_EXPORT_REFLECTED_CLASS**
+// ```cpp
+// BEGIN_EXPORT_REFLECTED_CLASS(UWorld)
+//     ADD_LIB(UWorldLib)
+//     ADD_FUNCTION(GetTimeSeconds)
+// END_EXPORT_CLASS()
+// ```
+// - **功能**：扩展 `UWorld` 类的 Lua 接口
+// - **新增方法**：
+//   - `SpawnActor` / `SpawnActorEx`：通过 `UWorldLib` 添加
+//   - `GetTimeSeconds`：原生方法直接绑定
+
+// ---
+
+// ### **4. 错误处理与安全校验**
+// ```cpp
+// if (!World) return luaL_error(L, "invalid world");
+// if (!Class) return luaL_error(L, "invalid actor class");
+// ```
+// - **参数校验**：严格检查前两个参数的有效性
+// - **类型安全**：使用 `Cast<>` 确保对象类型正确
+// - **Lua 栈保护**：通过 `luaL_ref` 管理临时表的引用
+
+// ---
+
+// ### **5. 动态绑定机制**
+// ```cpp
+// FScopedLuaDynamicBinding Binding(L, Class, ModuleName, TableRef);
+// ```
+// - **作用**：在生成 Actor 时临时绑定 Lua 逻辑
+// - **生命周期**：作用域结束时自动解绑
+// - **典型应用**：
+//   - 覆盖 Actor 的初始化逻辑
+//   - 动态注入 Lua 组件
+
+// ---
+
+// ### **6. 参数处理技巧**
+// #### **可选参数处理**
+// ```cpp
+// if (NumParams > 2) { /* 处理 Transform */ }
+// if (NumParams > 3) { /* 处理碰撞方式 */ }
+// ```
+// - **灵活参数**：支持从 Lua 传递不同数量的参数
+// - **默认值机制**：未传递参数使用 UE 默认值
+
+// #### **Lua 表初始化**
+// ```lua
+// World:SpawnActor(Class, Transform, {
+//     Color = {R=1,G=0,B=0},
+//     Health = 100
+// })
+// ```
+// - **表解析**：通过 `lua_type(L, 8) == LUA_TTABLE` 检测并处理初始化表
+
+// ---
+
+// ### **7. 性能优化点**
+// 1. **减少 Lua/C++ 交互**：批量处理参数而非逐字段获取
+// 2. **引用计数管理**：使用 `LUA_REGISTRYINDEX` 避免重复创建对象
+// 3. **类型缓存**：通过 `DEFINE_TYPE` 预生成类型信息
+
+// ---
+
+// ### **使用示例**
+// #### **Lua 中生成 Actor**
+// ```lua
+// local World = GWorld:GetWorld()
+// local Class = UE.UClass.Load("/Game/Blueprints/BP_Enemy.BP_Enemy_C")
+// local Transform = UE.FTransform(UE.FVector(0,0,100))
+
+// -- 简单生成
+// local Enemy = World:SpawnActor(Class, Transform)
+
+// -- 完整参数
+// local Boss = World:SpawnActor(
+//     Class, 
+//     Transform, 
+//     UE.ESpawnActorCollisionHandlingMethod.AlwaysSpawn,
+//     Player, 
+//     nil, 
+//     "NPC.BossAI", 
+//     {Health=5000, Level=5}
+// )
+// ```
+
+// ---
+
+// ### **总结**
+// 这段代码实现了以下核心功能：
+// 1. **灵活生成接口**：支持多种参数组合的 Actor 生成
+// 2. **类型安全绑定**：严格校验并转换 Lua/C++ 对象
+// 3. **动态逻辑注入**：通过临时绑定实现 Lua 逻辑覆盖
+// 4. **跨版本兼容**：处理不同 UE 引擎版本的差异
+
+// 通过这套机制，开发者可以在 Lua 脚本中以接近原生 C++ 的性能操作 UE 的 Actor 生成系统，同时享受 Lua 的灵活性和热重载优势。
+
+
 // Tencent is pleased to support the open source community by making UnLua available.
 //
 // Copyright (C) 2019 THL A29 Limited, a Tencent company. All rights reserved.
